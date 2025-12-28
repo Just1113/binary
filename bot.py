@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 import threading
 import yfinance as yf
 import pandas_ta as ta
@@ -7,26 +8,13 @@ from telegram import Bot
 from flask import Flask
 
 # ======================
-# ENVIRONMENT VARIABLES
-# ======================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-PORT = int(os.environ.get("PORT", 8000))  # Render assigns PORT automatically
-
-if not TOKEN or not CHAT_ID:
-    raise ValueError("Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables")
+PORT = int(os.environ.get("PORT", 8000))  # Render port
 
 bot = Bot(token=TOKEN)
 
 # ======================
-# SETTINGS
-# ======================
-TIMEFRAME = "1m"
-SCAN_INTERVAL = 60         # scan every minute
-PAIR_COOLDOWN = 300        # 5 min cooldown per pair
-HEARTBEAT_INTERVAL = 3*60*60  # every 3 hours
-last_heartbeat = 0
-
 PAIRS = {
     "AUD/USD": "AUDUSD=X",
     "EUR/USD": "EURUSD=X",
@@ -41,21 +29,20 @@ PAIRS = {
 }
 
 last_signal_time = {}
+TIMEFRAME = "1m"
+SCAN_INTERVAL = 60
+PAIR_COOLDOWN = 300
+HEARTBEAT_INTERVAL = 3*60*60
+last_heartbeat = 0
 
 # ======================
-# STARTUP MESSAGE
-# ======================
-try:
-    bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"🚀 Multi-pair Telegram bot started successfully!\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    print("Startup message sent to Telegram.")
-except Exception as e:
-    print(f"Failed to send startup message: {e}")
+async def send_telegram(msg):
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        print(f"Sent Telegram message: {msg}")
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
 
-# ======================
-# FETCH MARKET DATA
 # ======================
 def get_data(symbol):
     df = yf.download(
@@ -66,9 +53,6 @@ def get_data(symbol):
     )
     return df.dropna()
 
-# ======================
-# ANALYSIS LOGIC
-# ======================
 def analyze(df):
     df["EMA50"] = ta.ema(df["Close"], 50)
     df["EMA200"] = ta.ema(df["Close"], 200)
@@ -84,82 +68,51 @@ def analyze(df):
 
     price_dist = abs(last["Close"] - last["EMA50"])
 
-    if last["EMA50"] > last["EMA200"] and 55 <= last["RSI"] <= 68 and last["RSI"] > prev["RSI"] and last["Close"] > last["Open"] and price_dist < last["ATR"] * 1.2:
+    if last["EMA50"] > last["EMA200"] and 55 <= last["RSI"] <= 68 and last["RSI"] > prev["RSI"] and last["Close"] > last["Open"] and price_dist < last["ATR"]*1.2:
         return "HIGHER ↗️"
 
-    if last["EMA50"] < last["EMA200"] and 32 <= last["RSI"] <= 45 and last["RSI"] < prev["RSI"] and last["Close"] < last["Open"] and price_dist < last["ATR"] * 1.2:
+    if last["EMA50"] < last["EMA200"] and 32 <= last["RSI"] <= 45 and last["RSI"] < prev["RSI"] and last["Close"] < last["Open"] and price_dist < last["ATR"]*1.2:
         return "LOWER ↘️"
 
     return None
 
-# ======================
-# SEND TELEGRAM SIGNAL
-# ======================
-def send_signal(pair, signal):
+async def send_signal(pair, signal):
     message = f"""
 🖇 Signal information:
 {pair} (OTC) — 1 minute
 
-📰 Market Setting:
-Trend-following
-Volatility: Filtered
-
-🖥 Technical overview:
-EMA 50 / EMA 200
-RSI + ADX
-ATR + Candle confirmation
-
-💷 Probabilities:
-High confluence (rule-based)
-
-🧨 Bot signal:
+💷 Bot signal:
 {signal}
 """
-    bot.send_message(chat_id=CHAT_ID, text=message)
-    print(f"[{time.strftime('%H:%M:%S')}] Sent {signal} for {pair}")
+    await send_telegram(message)
 
 # ======================
-# MAIN BOT LOOP
-# ======================
-def bot_loop():
+async def bot_loop():
     global last_heartbeat
     while True:
-        try:
-            now = time.time()
+        now = time.time()
 
-            # Heartbeat
-            if now - last_heartbeat > HEARTBEAT_INTERVAL:
-                try:
-                    bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=f"💓 Bot is alive! Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                    print("Heartbeat sent.")
-                    last_heartbeat = now
-                except Exception as e:
-                    print(f"Failed to send heartbeat: {e}")
+        # heartbeat
+        if now - last_heartbeat > HEARTBEAT_INTERVAL:
+            await send_telegram(f"💓 Bot is alive! Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            last_heartbeat = now
 
-            # Scan pairs
-            for pair_name, symbol in PAIRS.items():
-                last_time = last_signal_time.get(pair_name, 0)
-                if now - last_time < PAIR_COOLDOWN:
-                    continue
+        # scan pairs
+        for pair_name, symbol in PAIRS.items():
+            last_time = last_signal_time.get(pair_name, 0)
+            if now - last_time < PAIR_COOLDOWN:
+                continue
 
-                df = get_data(symbol)
-                signal = analyze(df)
-                if signal:
-                    send_signal(pair_name, signal)
-                    last_signal_time[pair_name] = now
+            df = get_data(symbol)
+            signal = analyze(df)
+            if signal:
+                await send_signal(pair_name, signal)
+                last_signal_time[pair_name] = now
 
-            time.sleep(SCAN_INTERVAL)
-
-        except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] Error: {e}")
-            time.sleep(60)
+        await asyncio.sleep(SCAN_INTERVAL)
 
 # ======================
-# FLASK SERVER FOR PORT
-# ======================
+# FLASK SERVER
 app = Flask(__name__)
 
 @app.route("/")
@@ -170,9 +123,12 @@ def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
 # ======================
-# START THREADS
-# ======================
 if __name__ == "__main__":
-    # Run bot loop in a separate thread
-    threading.Thread(target=bot_loop, daemon=True).start()
-    #
+    # startup message
+    asyncio.run(send_telegram(f"🚀 Multi-pair Telegram bot started!\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"))
+
+    # run bot loop in thread
+    threading.Thread(target=lambda: asyncio.run(bot_loop()), daemon=True).start()
+
+    # run flask server (blocks main thread)
+    run_flask()
