@@ -1,17 +1,26 @@
+import os
+import time
 import yfinance as yf
 import pandas_ta as ta
 from telegram import Bot
-import time
 
 # ======================
-# CONFIG
+# ENVIRONMENT VARIABLES
 # ======================
-TOKEN = "8085092545:AAHCY7MahLYj8zWLF0pj3Jyx9CL1BYVO8m0"
-CHAT_ID = "8013408393"
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+if not TOKEN or not CHAT_ID:
+    raise ValueError("Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables")
+
+bot = Bot(token=TOKEN)
+
+# ======================
+# SETTINGS
+# ======================
 TIMEFRAME = "1m"
-SCAN_INTERVAL = 60        # scan every minute
-PAIR_COOLDOWN = 300       # 5 mins per pair
+SCAN_INTERVAL = 60      # scan every minute
+PAIR_COOLDOWN = 300     # 5 min cooldown per pair
 
 PAIRS = {
     "AUD/USD": "AUDUSD=X",
@@ -26,15 +35,14 @@ PAIRS = {
     "EUR/GBP": "EURGBP=X"
 }
 
-bot = Bot(token=TOKEN)
 last_signal_time = {}
 
 # ======================
-# FETCH DATA
+# FETCH MARKET DATA
 # ======================
 def get_data(symbol):
     df = yf.download(
-        symbol,
+        tickers=symbol,
         period="1d",
         interval=TIMEFRAME,
         progress=False
@@ -42,7 +50,7 @@ def get_data(symbol):
     return df.dropna()
 
 # ======================
-# ANALYSIS
+# ANALYSIS LOGIC
 # ======================
 def analyze(df):
     df["EMA50"] = ta.ema(df["Close"], 50)
@@ -83,7 +91,7 @@ def analyze(df):
     return None
 
 # ======================
-# SEND SIGNAL
+# SEND TELEGRAM SIGNAL
 # ======================
 def send_signal(pair, signal):
     message = f"""
@@ -92,7 +100,7 @@ def send_signal(pair, signal):
 
 📰 Market Setting:
 Trend-following
-Volatility: Confirmed
+Volatility: Filtered
 
 🖥 Technical overview:
 EMA 50 / EMA 200
@@ -106,6 +114,7 @@ High confluence (rule-based)
 {signal}
 """
     bot.send_message(chat_id=CHAT_ID, text=message)
+    print(f"[{time.strftime('%H:%M:%S')}] Sent {signal} for {pair}")
 
 # ======================
 # MAIN LOOP
@@ -113,11 +122,8 @@ High confluence (rule-based)
 while True:
     try:
         now = time.time()
-
         for pair_name, symbol in PAIRS.items():
             last_time = last_signal_time.get(pair_name, 0)
-
-            # Cooldown check
             if now - last_time < PAIR_COOLDOWN:
                 continue
 
@@ -131,5 +137,5 @@ while True:
         time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
-        print("Error:", e)
+        print(f"[{time.strftime('%H:%M:%S')}] Error: {e}")
         time.sleep(60)
